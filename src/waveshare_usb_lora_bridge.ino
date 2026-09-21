@@ -9,8 +9,10 @@
 // sends framed commands over the CH343 virtual COM port, and the MCU
 // executes them as raw SPI transfers or GPIO reads/writes against the
 // SX1262. All radio protocol logic (register maps, opcodes, BUSY/DIO1
-// timing) lives on the host side. See README.md for the wire protocol
-// and pin map.
+// timing) lives on the host side, with one narrow exception: the TXD/RXD
+// activity LEDs recognize the SX1262 SetTx opcode byte to light TXD with
+// the correct direction (RXD is driven off the DIO1 edge instead). See
+// README.md for the wire protocol and pin map.
 //
 // Pin map (from hardware teardown, see README.md):
 //   PA4  SX1262 NRESET   (output)
@@ -90,6 +92,48 @@ enum Status : uint8_t {
 static const uint8_t FW_VERSION = 1;
 
 // ---------------------------------------------------------------------------
+// TXD/RXD activity LEDs
+//
+// The only piece of SX1262 protocol knowledge in this otherwise "dumb"
+// bridge: recognizing the SetTx opcode byte, purely to light the TXD LED
+// with the correct direction. Everything else about SPI_XFER stays a raw
+// byte relay. RXD is driven off the DIO1 edge instead, since there's no
+// single "RX done" command byte to sniff for.
+// ---------------------------------------------------------------------------
+
+static const uint8_t SX126X_CMD_SET_TX = 0x83;
+static const uint32_t LED_PULSE_MS = 40;
+
+static uint32_t ledTxOffAt = 0; // 0 = not currently pulsing
+static uint32_t ledRxOffAt = 0;
+static uint8_t dio1PrevState = 0;
+
+static void pulseLed(uint8_t pin, uint32_t &offAt) {
+  digitalWrite(pin, LOW); // active low -> on
+  offAt = millis() + LED_PULSE_MS;
+}
+
+static void updateActivityLeds() {
+  uint32_t now = millis();
+  if (ledTxOffAt != 0 && (int32_t)(now - ledTxOffAt) >= 0) {
+    digitalWrite(PIN_LED_TX, HIGH); // off
+    ledTxOffAt = 0;
+  }
+  if (ledRxOffAt != 0 && (int32_t)(now - ledRxOffAt) >= 0) {
+    digitalWrite(PIN_LED_RX, HIGH); // off
+    ledRxOffAt = 0;
+  }
+}
+
+static void pollDio1ForRxLed() {
+  uint8_t state = digitalRead(PIN_DIO1);
+  if (dio1PrevState == 0 && state == 1) {
+    pulseLed(PIN_LED_RX, ledRxOffAt);
+  }
+  dio1PrevState = state;
+}
+
+// ---------------------------------------------------------------------------
 // CRC8/MAXIM
 // ---------------------------------------------------------------------------
 
@@ -155,6 +199,9 @@ static void handleFrame(uint8_t cmd, const uint8_t *payload, uint16_t len) {
         break;
       }
       memcpy(txPayload, payload, len);
+      if (len > 0 && txPayload[0] == SX126X_CMD_SET_TX) {
+        pulseLed(PIN_LED_TX, ledTxOffAt);
+      }
       digitalWrite(PIN_CS, LOW);
       for (uint16_t i = 0; i < len; ++i) {
         txPayload[i] = SPI_2.transfer(txPayload[i]);
@@ -307,6 +354,10 @@ void setup() {
   pinMode(PIN_DIO1, INPUT);
   pinMode(PIN_BUTTON, INPUT_PULLUP);
 
+  // Establish a baseline before edge-detecting in pollDio1ForRxLed(), so a
+  // DIO1 line that's already high at boot doesn't look like a rising edge.
+  dio1PrevState = digitalRead(PIN_DIO1);
+
   pinMode(PIN_CS, OUTPUT);
   digitalWrite(PIN_CS, HIGH);
 
@@ -318,4 +369,6 @@ void setup() {
 
 void loop() {
   pollSerial();
+  pollDio1ForRxLed();
+  updateActivityLeds();
 }
