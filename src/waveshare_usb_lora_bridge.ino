@@ -26,6 +26,7 @@
 //   USART1: PA9=TX PA10=RX -> CH343 -> USB (this is Serial1 on this core)
 
 #include <Arduino.h>
+#include <IWatchdog.h>
 #include <SPI.h>
 #include <string.h>
 
@@ -35,6 +36,7 @@
 
 static const uint32_t HOST_BAUD = 921600;
 static const uint32_t SPI_CLOCK_HZ = 8000000; // SX1262 supports up to ~18MHz; 8MHz is a safe default
+static const uint32_t IWDG_TIMEOUT_US = 2000000; // 2s: generous vs. a normal loop() (micros), tight vs. a real freeze
 
 // SPI2 pins (MOSI, MISO, SCK) — CS is handled manually, not via hardware NSS.
 SPIClass SPI_2(PB15, PB14, PB13);
@@ -164,11 +166,20 @@ enum ParseState {
   WAIT_CRC,
 };
 
+// A frame that's interrupted mid-flight (dropped byte, host process killed
+// while writing) would otherwise leave the parser stuck in WAIT_PAYLOAD/
+// WAIT_CRC forever, since those states only advance on incoming bytes: every
+// later byte -- including a fresh command after the host restarts -- would
+// then be misread as a leftover part of the dead frame. FRAME_TIMEOUT_MS
+// bounds how long a partial frame can sit before we give up and resync.
+static const uint32_t FRAME_TIMEOUT_MS = 20;
+
 static ParseState parseState = WAIT_SOF;
 static uint8_t rxCmd = 0;
 static uint16_t rxLen = 0;
 static uint16_t rxIndex = 0;
 static uint8_t rxPayload[MAX_PAYLOAD];
+static uint32_t lastRxByteMillis = 0;
 
 static uint8_t txPayload[MAX_PAYLOAD];
 
@@ -270,8 +281,13 @@ static void resetParser() {
 }
 
 static void pollSerial() {
+  if (parseState != WAIT_SOF && (uint32_t)(millis() - lastRxByteMillis) > FRAME_TIMEOUT_MS) {
+    resetParser();
+  }
+
   while (Serial1.available() > 0) {
     uint8_t b = (uint8_t)Serial1.read();
+    lastRxByteMillis = millis();
 
     switch (parseState) {
       case WAIT_SOF:
@@ -365,9 +381,16 @@ void setup() {
   SPI_2.beginTransaction(SPISettings(SPI_CLOCK_HZ, MSBFIRST, SPI_MODE0));
 
   Serial1.begin(HOST_BAUD);
+
+  // Safety net: if loop() ever stalls for real (e.g. Serial1.write() wedged
+  // on a UART fault), reboot rather than sit frozen until someone notices
+  // and power-cycles the stick. A normal loop() iteration takes microseconds,
+  // so this timeout is only ever at risk during an actual freeze.
+  IWatchdog.begin(IWDG_TIMEOUT_US);
 }
 
 void loop() {
+  IWatchdog.reload(); // no-op if begin() didn't take (e.g. bad timeout value)
   pollSerial();
   pollDio1ForRxLed();
   updateActivityLeds();
