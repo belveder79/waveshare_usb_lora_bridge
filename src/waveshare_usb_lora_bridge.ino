@@ -91,7 +91,12 @@ enum Status : uint8_t {
   STATUS_ERR_PIN = 0x04,
 };
 
-static const uint8_t FW_VERSION = 1;
+static const uint8_t FW_VERSION = 2;
+
+// RCC_CSR reset-cause flags (bits 31..24: LPWR WWDG IWDG SFT POR PIN), as
+// latched at boot, so the host can tell *why* the bridge went silent: an
+// IWDG reset vs. a brownout/power-on vs. a NRST pin reset. Reported in PING.
+static uint8_t bootResetFlags = 0;
 
 // ---------------------------------------------------------------------------
 // TXD/RXD activity LEDs
@@ -199,8 +204,13 @@ static void sendResponse(uint8_t status, const uint8_t *payload, uint16_t len) {
 static void handleFrame(uint8_t cmd, const uint8_t *payload, uint16_t len) {
   switch (cmd) {
     case CMD_PING: {
-      uint8_t resp[6] = {'W', 'S', 'L', 'B', FW_VERSION, 0};
-      sendResponse(STATUS_OK, resp, 5);
+      // Kept at 8 bytes: hosts built against fw v1 read PING into an
+      // 8-byte buffer and reject anything longer.
+      uint32_t up = millis() / 1000;
+      uint16_t upSec = up > 0xFFFF ? 0xFFFF : (uint16_t)up;
+      uint8_t resp[8] = {'W', 'S', 'L', 'B', FW_VERSION, bootResetFlags,
+                         (uint8_t)(upSec & 0xFF), (uint8_t)(upSec >> 8)};
+      sendResponse(STATUS_OK, resp, sizeof(resp));
       break;
     }
 
@@ -353,6 +363,11 @@ void setup() {
   // silently hangs. This is a no-op on a normal SWD/cold-boot start, where
   // interrupts are already enabled.
   __enable_irq();
+
+  // Latch and clear the reset cause before anything else can reset us.
+  // (May read 0 if the bootloader already cleared RCC_CSR.)
+  bootResetFlags = (uint8_t)(RCC->CSR >> 24);
+  RCC->CSR |= RCC_CSR_RMVF;
 
   pinMode(PIN_NRESET, OUTPUT);
   digitalWrite(PIN_NRESET, HIGH);

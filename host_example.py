@@ -53,6 +53,10 @@ class BridgeError(RuntimeError):
 class Bridge:
     def __init__(self, port: str, baud: int = 921600, timeout: float = 1.0):
         self._ser = serial.Serial(port, baud, timeout=timeout)
+        # Drop anything a previous user of the port left unread, so a stale
+        # byte isn't mistaken for the start of our response.
+        time.sleep(0.05)
+        self._ser.reset_input_buffer()
 
     def close(self):
         self._ser.close()
@@ -63,14 +67,28 @@ class Bridge:
         frame = bytes([SOF]) + header + payload + bytes([crc])
         self._ser.write(frame)
 
+    def _read_exact(self, n: int, what: str, got: bytes) -> bytes:
+        data = self._ser.read(n)
+        if len(data) != n:
+            raise BridgeError(
+                f"timed out reading {what}: got {len(data)}/{n} bytes "
+                f"(frame so far: {(got + data).hex() or 'nothing'})"
+            )
+        return data
+
     def _recv(self):
-        if self._ser.read(1) != bytes([SOF]):
-            raise BridgeError("timed out waiting for start-of-frame")
-        status = self._ser.read(1)[0]
-        len_lo, len_hi = self._ser.read(2)
+        frame = b""
+        sof = self._read_exact(1, "start-of-frame", frame)
+        frame += sof
+        if sof[0] != SOF:
+            raise BridgeError(f"bad start-of-frame 0x{sof[0]:02x}")
+        hdr = self._read_exact(3, "header", frame)
+        frame += hdr
+        status, len_lo, len_hi = hdr
         length = len_lo | (len_hi << 8)
-        payload = self._ser.read(length)
-        crc = self._ser.read(1)[0]
+        payload = self._read_exact(length, "payload", frame)
+        frame += payload
+        crc = self._read_exact(1, "CRC", frame)[0]
 
         expected = crc8_maxim(bytes([status, len_lo, len_hi]) + payload)
         if crc != expected:
@@ -111,6 +129,11 @@ def main():
     try:
         version = bridge.ping()
         print(f"ping ok: {version!r}")
+        if len(version) >= 8:
+            print(
+                f"  fw v{version[4]}, reset flags 0x{version[5]:02x}, "
+                f"uptime {version[6] | (version[7] << 8)}s"
+            )
 
         bridge.reset_radio()
         print("radio reset pulsed")

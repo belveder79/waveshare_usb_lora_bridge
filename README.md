@@ -155,7 +155,7 @@ Device → host:
 
 | CMD | Name | Payload (host→device) | Response payload | Notes |
 |---|---|---|---|---|
-| `0x00` | `PING` | — | `"WSLB"` + fw version byte | liveness / version check |
+| `0x00` | `PING` | — | `"WSLB"` + fw version byte + reset flags + uptime (u16 LE, seconds, saturating) | liveness / version / reboot check |
 | `0x01` | `SPI_XFER` | N bytes to clock out | N bytes read back | asserts CS low for the duration of the transfer, then deasserts |
 | `0x02` | `GPIO_WRITE` | `[pin_id][value]` | — | pin_id: see table below |
 | `0x03` | `GPIO_READ` | `[pin_id]` | `[value]` | pin_id: see table below |
