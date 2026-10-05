@@ -199,6 +199,9 @@ See `host_example.py` for a minimal working client.
 - `src/waveshare_usb_lora_bridge.ino` — the firmware.
 - `host_example.py` — a small Python client demonstrating the protocol
   (ping the device, toggle reset, and read the SX1262's status byte).
+- `tools/link_probe.py` — reopens the port under different baud/DTR/RTS
+  strategies and PINGs each time (printing uptime and reset flags), to debug
+  a bridge that stops answering.
 - `tools/flash_over_bootloader.py` — flashes this firmware over USB serial
   into a device running Archie3d's custom bootloader (see "Building /
   flashing" above), instead of over SWD.

@@ -20,6 +20,12 @@ Reading the output:
   - only the "nodtr" variants work          -> DTR/RTS reach the MCU
   - works with small uptime after each open -> opening the port resets the MCU
 
+Before blaming the hardware, check that nothing else has the port open
+(`sudo fuser -v /dev/ttyACM0`): termios is per tty, so any other process that
+opens it -- e.g. a Meshtastic Python client auto-probing serial ports at
+115200 -- silently changes the baud rate for everyone, and the bridge then
+looks dead.
+
 Usage:
     python3 tools/link_probe.py <serial-port> [rounds]
 """
